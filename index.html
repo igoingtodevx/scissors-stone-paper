@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Schere · Stein · Papier · Godhand</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: radial-gradient(ellipse at top, #1f2937, #0b0f19);
+    color: #f3f4f6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 20px;
+  }
+  h1 { margin: 0; font-size: 2.2rem; text-align:center; }
+  .tag {
+    background: #374151;
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    color: #cbd5e1;
+  }
+  .stage {
+    background: #111827;
+    border: 1px solid #243044;
+    border-radius: 18px;
+    padding: 24px 18px;
+    width: min(520px, 96vw);
+    display: grid;
+    gap: 16px;
+  }
+  .row { display: grid; gap: 8px; }
+  .row.two { grid-template-columns: 1fr 1fr; }
+  .muted { color: #9aa3b2; font-size: 14px; text-align:center; }
+  input, button { font: inherit; }
+  input[type="text"] {
+    width: 100%;
+    background: #0f172a;
+    color: #f3f4f6;
+    border: 1px solid #243044;
+    border-radius: 10px;
+    padding: 10px 12px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: #5579d4; }
+  button {
+    background: #2563eb;
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  button:disabled { opacity: .65; cursor: not-allowed; }
+  .choice {
+    background: #0f172a;
+    border: 1px solid #243044;
+    border-radius: 14px;
+    padding: 14px 10px;
+    cursor: pointer;
+    text-align: center;
+    transition: transform .1s, border-color .25s, background .25s;
+  }
+  .choice:hover { border-color: #5579d4; background: #0b1222; }
+  .choice.picked {
+    border-color: #22c55e;
+    background: #052e16;
+    box-shadow: 0 0 0 2px #22c55e33;
+    transform: translateY(-2px);
+  }
+  .choice.godhand {
+    border-color: #f59e0b;
+    background: #3b2000;
+  }
+  .choice .emoji { font-size: 44px; line-height: 1; }
+  .choice .label { font-size: 13px; color: #cbd5e1; margin-top: 4px; }
+  .vs {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    font-weight: 700; letter-spacing: .1em; color: #9aa3b2;
+  }
+  .result {
+    font-size: 20px; padding: 6px 0; text-align: center;
+  }
+  .score { text-align: center; color: #e5e7eb; }
+  #status { color: #f59e0b; }
+  #round-end #status { color: #34d399; }
+</style>
+</head>
+<body>
+
+<h1>✌️ Schere · Stein · Papier · ✋ Godhand</h1>
+<div class="tag">Multiplayer P2P via WebRTC</div>
+
+<div class="stage">
+  <div class="row">
+    <input id="hostIdInput" type="text" placeholder="Host-Link / Peer-ID hier einfügen" />
+    <button id="joinBtn">Beitreten</button>
+  </div>
+  <div class="row muted">
+    Verbindung: <span id="status">nicht verbunden</span>
+    <br/><small>Host startet den Raum. Gast kopiert die Host-ID und gibt sie oben ein.</small>
+  </div>
+
+  <div class="row two">
+    <div id="youPick" class="choice" data-opt="schere">
+      <div class="emoji">✌️</div>
+      <div class="label">Schere</div>
+    </div>
+    <div id="youPick" class="choice" data-opt="stein">
+      <div class="emoji">🪨</div>
+      <div class="label">Stein</div>
+    </div>
+  </div>
+  <div class="row two">
+    <div id="youPick" class="choice" data-opt="papier">
+      <div class="emoji">🧻</div>
+      <div class="label">Papier</div>
+    </div>
+    <div id="youPick" class="choice godhand" data-opt="godhand">
+      <div class="emoji">✋</div>
+      <div class="label">Godhand (1×)</div>
+    </div>
+  </div>
+
+  <div class="vs">VS</div>
+
+  <div id="oppLabel" class="muted">Gegner: wartet …</div>
+
+  <div id="round-end" class="result" aria-live="polite"></div>
+  <div id="score" class="score">Du 0 · Gegner 0 · Unentschieden 0</div>
+  <div class="row">
+    <button id="resetBtn">Runde leeren</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+(() => {
+  // zwei Logiken: Host = Host-ID liefern; Gast = Host-ID joinen.
+  // Der Host wird "links", der Gast "rechts" zugeordnet.
+  const choices = ['schere','stein','papier','godhand'];
+  const emoji = { schere:'✌️', stein:'🪨', papier:'🧻', godhand:'✋' };
+  let peer = null;
+  let conn = null;
+  let myRole = null; // 'host' | 'guest'
+  let myPick = null;
+  let oppPick = null;
+  let scores = { you:0, opp:0, draw:0 };
+  const godhandTokens = { host: true, guest: true };
+
+  const $ = (sel) => document.querySelector(sel);
+  const status = $('#status'), roundEnd = $('#round-end'), scoreBox = $('#score'), oppLabel=$('#oppLabel');
+
+  function updateStatus() {
+    if (!conn || !conn.open) return;
+    status.textContent = myRole === 'host' ? 'verbunden als Host (links)' : 'verbunden als Gast (rechts)';
+    status.style.color = '#34d399';
+  }
+
+  function winners(a, b) {
+    if (a === b) return 'draw';
+    const map = { schere:'papier', papier:'stein', stein:'schere', godhand:null };
+    if (a === 'godhand') return 'you';
+    if (b === 'godhand') return 'opp';
+    return map[a] === b ? 'you' : 'opp';
+  }
+
+  function fmtOutcome(w) {
+    if (w === 'draw') return '🤝 Unentschieden';
+    return w === 'you' ? '✅ Du gewinnst die Runde' : '❌ Gegner gewinnt';
+  }
+
+  function renderScore() {
+    scoreBox.textContent = 'Du ' + scores.you + ' · Gegner ' + scores.opp + ' · Unentschieden ' + scores.draw;
+  }
+
+  function pick(opt) {
+    if (conn && conn.open) {
+      myPick = opt;
+      highlight(opt);
+      send({ type: 'pick', pick: opt });
+      evaluate();
+    }
+  }
+
+  function highlight(opt) {
+    document.querySelectorAll('#youPick').forEach((el) => {
+      el.classList.toggle('picked', el.dataset.opt === opt);
+    });
+  }
+
+  function send(msg) { if (conn && conn.open) conn.send(msg); }
+
+  function handleOppPick(opt) {
+    oppPick = opt;
+    document.querySelectorAll('#youPick').forEach((el) => {
+      if (el.dataset.opt === opt) el.classList.add('picked');
+    });
+    oppLabel.textContent = 'Gegner hat gewählt: ' + emoji[opt] + ' ' + opt.toUpperCase();
+  }
+
+  function evaluate() {
+    if (!myPick || !oppPick) return;
+    const w = winners(myPick, oppPick);
+    if (w !== 'draw') scores[w] += 1;
+    roundEnd.textContent = fmtOutcome(w);
+    if (w === 'you' && myPick !== 'godhand' && !godhandTokens.host) godhandTokens.host = false;
+    if (w === 'you' && myPick === 'godhand') godhandTokens.host = false;
+    if (w === 'opp') godhandTokens.guest = false;
+    renderScore();
+    disablePicks();
+  }
+
+  function disablePicks() {
+    document.querySelectorAll('#youPick').forEach((btn) => {
+      btn.style.pointerEvents = 'none';
+      if (btn.dataset.opt === 'godhand' && godhandTokens[myRole] === false) {
+        btn.style.opacity = .5;
+        btn.style.cursor = 'not-allowed';
+      }
+    });
+  }
+
+  function resetRound() {
+    myPick = oppPick = null;
+    roundEnd.textContent = '';
+    document.querySelectorAll('#youPick').forEach((btn) => {
+      btn.classList.remove('picked');
+      btn.style.pointerEvents = 'auto';
+      btn.style.opacity = 1;
+    });
+    oppLabel.textContent = 'Gegner: wartet …';
+  }
+
+  function startHost() {
+    myRole = 'host';
+    peer = new Peer();
+    peer.on('open', (id) => {
+      $('#hostIdInput').value = id;
+      status.textContent = 'warte auf Gast …';
+    });
+    peer.on('connection', (c) => {
+      conn = c;
+      conn.on('open', () => {
+        updateStatus();
+        oppLabel.textContent = 'Gegner: verbunden';
+        resetRound();
+      });
+      conn.on('data', handleData);
+      conn.on('close', () => { status.textContent = 'Verbindung getrennt'; conn = null; });
+    });
+  }
+
+  function joinHost(hostId) {
+    myRole = 'guest';
+    peer = new Peer();
+    peer.on('error', (e) => status.textContent = 'Verbindungsfehler: ' + e.type);
+    peer.on('open', () => {
+      conn = peer.connect(hostId, { reliable: true });
+      conn.on('open', () => {
+        updateStatus();
+        oppLabel.textContent = 'Gegner: verbunden';
+        resetRound();
+      });
+      conn.on('data', handleData);
+      conn.on('close', () => { status.textContent = 'Verbindung getrennt'; conn = null; });
+    });
+  }
+
+  function handleData(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'pick') handleOppPick(msg.pick);
+  }
+
+  $('#joinBtn').addEventListener('click', () => {
+    const raw = $('#hostIdInput').value.trim();
+    if (!raw) return;
+    if (!peer) joinHost(raw);
+    else if (conn && conn.open) status.textContent = 'Bereits verbunden';
+    else joinHost(raw);
+  });
+
+  document.querySelectorAll('#youPick').forEach((el) => {
+    el.addEventListener('click', () => {
+      const opt = el.dataset.opt;
+      if (!opt) return;
+      if (opt === 'godhand' && godhandTokens[myRole] === false) return;
+      pick(opt);
+    });
+  });
+
+  $('#resetBtn').addEventListener('click', () => {
+    myPick = oppPick = null;
+    godhandTokens.host = true; godhandTokens.guest = true;
+    renderScore(); resetRound();
+  });
+
+  startHost();
+})();
+</script>
+</body>
+</html>
